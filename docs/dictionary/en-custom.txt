@@ -26,6 +26,7 @@ az
 azs
 backend
 backends
+barbican
 baremetal
 baremetalhost
 basedir
@@ -46,6 +47,7 @@ bootmacaddress
 bootmode
 buildah
 buildpkgs
+cacert
 cacheable
 cci
 ccitredhat
@@ -207,6 +209,8 @@ hostnames
 hostvars
 hotfix
 href
+hsm
+hsms
 https
 ic
 icjbuue
@@ -305,6 +309,7 @@ mellanox
 metallb
 metalsmith
 mgmt
+minclient
 mins
 minsizegigabytes
 mlnx
@@ -398,6 +403,7 @@ params
 passwd
 passwordless
 pastebin
+pem
 pkgs
 pki
 png
