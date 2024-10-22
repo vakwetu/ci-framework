@@ -1,0 +1,78 @@
+---
+- name: Create modified barbican image and get secrets
+  hosts: "{{ cifmw_target_hook_host | default('localhost') }}"
+  tasks:
+    - name: Check out the role git repo
+      ansible.builtin.git:
+        dest: "./rhoso_luna_hsm"
+        repo: "https://github.com/openstack-k8s-operators/ansible-role-rhoso-luna-hsm.git"
+        version: main
+
+    - name: Create and upload the new barbican images
+      ansible.builtin.include_role:
+        name: rhoso_luna_hsm
+        tasks_from: create_image.yml
+      vars:
+        barbican_src_image_registry: "{{ content_provider_registry_ip }}:5001"
+        barbican_src_image_namespace: "{{ cifmw_set_openstack_containers_namespace }}"
+        barbican_src_image_tag: "{{ cifmw_update_extras['cifmw_set_openstack_containers_tag'] }}"
+        barbican_dest_image_registry: "{{ content_provider_registry_ip }}:5001"
+        barbican_dest_image_namespace: "{{ cifmw_set_openstack_containers_namespace }}"
+        barbican_dest_image_tag: "{{ cifmw_update_extras['cifmw_set_openstack_containers_tag'] }}{{ cifmw_update_barbican_custom_tag }}"
+        luna_minclient_src: "{{ cifmw_hsm_luna_minclient_src }}"
+        luna_binaries_src: "{{ cifmw_hsm_luna_binaries_src }}"
+
+    - name: Create secrets with the HSM certs and hsm-login credentials
+      ansible.builtin.include_role:
+        name: rhoso_luna_hsm
+        tasks_from: create_secrets.yml
+      vars:
+        client_ip: "{{ cifmw_hsm_client_ip }}"
+        luna_server_cert_src: "{{ cifmw_hsm_luna_server_cert_src }}"
+        luna_client_cert_src: "{{ cifmw_hsm_luna_client_cert_src }}"
+        partition_password: "{{ cifmw_hsm_partition_password }}"
+        kubeconfig_path: "{{ cifmw_openshift_kubeconfig }}"
+        oc_path: "{{ cifmw_path }}"
+        luna_cert_secret: "{{ cifmw_hsm_luna_cert_secret | default('barbican-luna-certs', true) }}"
+        login_secret: "{{ cifmw_hsm_login_secret | default('hsm-login', true) }}"
+
+- name: Create kustomization to use update barbican to use luna
+  hosts: "{{ cifmw_target_hook_host | default('localhost') }}"
+  tasks:
+    - name: Create file to customize barbican resource deployed in the control plane
+      vars:
+        certs_secret: "{{ cifmw_hsm_luna_cert_secret | default('barbican-luna-certs', true) }}"
+        login_secret: "{{ cifmw_hsm_login_secret | default('hsm-login', true) }}"
+      ansible.builtin.copy:
+        dest: "{{ cifmw_basedir }}/artifacts/manifests/kustomizations/controlplane/93-barbican-luna.yaml"
+        content: |-
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+          namespace: {{ namespace }}
+          patches:
+          - target:
+              kind: OpenStackControlPlane
+              name: .*
+            patch: |-
+              - op: add
+                path: /spec/barbican/template/globalDefaultSecretStore
+                value: pkcs11
+              - op: add
+                path: /spec/barbican/template/enabledSecretStores
+                value:
+                  - pkcs11
+              - op: add
+                path: /spec/barbican/template/pkcs11
+                value:
+                  type: luna
+                  libraryPath: /usr/local/luna/libs/64/libCryptoki2.so
+                  tokenLabels: "{{ cifmw_hsm_luna_partition }}"
+                  MKEKLabel: "{{ cifm_hsm_mkek_label }}"
+                  HMACLabel: "{{ cifm_hsm_hmac_label }}"
+                  serverAddress: "{{ cifmw_hsm_server_ip }}"
+                  clientAddress: "{{ cifmw_hsm_client_ip }}"
+                  loginSecret: "{{ login_secret }}"
+                  certificatesSecret: "{{ certs_secret }}"
+                  certificatesMountPoint: /usr/local/luna/config/certs
+                  keyWrapMechanism: "{{ cifmw_hsm_key_wrap_mechanism }}"
