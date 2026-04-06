@@ -1,0 +1,93 @@
+---
+# Create a cert-manager Certificate and a Skupper Listener in the leaf
+# namespace.  The Listener exposes the central RabbitMQ (via the Skupper
+# application network) as a local TLS endpoint that barbican-keystone-listener
+# can connect to.
+#
+# Variables:
+#   cifmw_skupper_leaf_namespace           (default: openstack2)
+#   cifmw_skupper_routing_key              (default: rabbit-keystone)
+#   cifmw_skupper_listener_host            (default: rabbitmq-regionone)
+#     The hostname used for both the Listener CR and the TLS certificate DNS
+#     names.  Must be unique within the leaf namespace.
+#   cifmw_skupper_listener_cert_secret     (default: cert-skupper-rabbitmq-regionone)
+#   cifmw_skupper_rabbitmq_port            (default: 5671)
+- name: Create Skupper Listener for RabbitMQ in leaf namespace
+  hosts: localhost
+  gather_facts: false
+  vars:
+    cifmw_skupper_leaf_namespace: openstack2
+    cifmw_skupper_routing_key: rabbit-keystone
+    cifmw_skupper_listener_host: rabbitmq-regionone
+    cifmw_skupper_listener_cert_secret: cert-skupper-rabbitmq-regionone
+    cifmw_skupper_rabbitmq_port: 5671
+  tasks:
+    - name: Create cert-manager Certificate for Skupper Listener
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: skupper-rabbitmq-regionone
+            namespace: "{{ cifmw_skupper_leaf_namespace }}"
+          spec:
+            secretName: "{{ cifmw_skupper_listener_cert_secret }}"
+            issuerRef:
+              name: rootca-internal
+              kind: Issuer
+            dnsNames:
+              - "{{ cifmw_skupper_listener_host }}"
+              - "{{ cifmw_skupper_listener_host }}.{{ cifmw_skupper_leaf_namespace }}.svc"
+              - "{{ cifmw_skupper_listener_host }}.{{ cifmw_skupper_leaf_namespace }}.svc.cluster.local"
+            usages:
+              - digital signature
+              - key encipherment
+              - server auth
+
+    - name: Wait for Listener certificate Secret to be created
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ cifmw_skupper_listener_cert_secret }}"
+        namespace: "{{ cifmw_skupper_leaf_namespace }}"
+      register: _listener_cert_secret
+      retries: 12
+      delay: 10
+      until: _listener_cert_secret.resources | length > 0
+
+    - name: Create Skupper Listener in leaf namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: skupper.io/v2alpha1
+          kind: Listener
+          metadata:
+            name: rabbitmq-keystone
+            namespace: "{{ cifmw_skupper_leaf_namespace }}"
+          spec:
+            routingKey: "{{ cifmw_skupper_routing_key }}"
+            host: "{{ cifmw_skupper_listener_host }}"
+            port: "{{ cifmw_skupper_rabbitmq_port }}"
+            type: tcp
+            tlsCredentials: "{{ cifmw_skupper_listener_cert_secret }}"
+
+    - name: Wait for Skupper Listener to be configured
+      # A Listener shows "Ready" only after its matching Connector activates the
+      # link.  Waiting for "Configured" is sufficient here; both sides will
+      # transition to "Ready" once the application network is fully established.
+      kubernetes.core.k8s_info:
+        api_version: skupper.io/v2alpha1
+        kind: Listener
+        name: rabbitmq-keystone
+        namespace: "{{ cifmw_skupper_leaf_namespace }}"
+      register: _listener
+      retries: 30
+      delay: 10
+      until:
+        - _listener.resources | length > 0
+        - _listener.resources[0].status is defined
+        - _listener.resources[0].status.conditions is defined
+        - _listener.resources[0].status.conditions |
+          selectattr('type', 'equalto', 'Configured') |
+          selectattr('status', 'equalto', 'True') | list | length > 0
